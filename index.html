@@ -1,0 +1,1445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Egg Heist: Brainrot Obby</title>
+<meta name="description" content="Egg Heist: Brainrot Obby — sprint the obby, steal the egg, outrun the guards! Bigger egg = bigger greed = slower escape. Free HTML5 game.">
+<meta property="og:title" content="Egg Heist: Brainrot Obby">
+<meta property="og:description" content="Grab the egg. Outrun the guards. How greedy are you? Steal the GOLDEN egg if you dare!">
+<meta property="og:image" content="https://snake58.github.io/egg-heist/og-image.jpg">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Egg Heist: Brainrot Obby">
+<meta name="twitter:description" content="Grab the egg. Outrun the guards. How greedy are you?">
+<meta name="twitter:image" content="https://snake58.github.io/egg-heist/og-image.jpg">
+
+<style>
+html,body{margin:0;padding:0;width:100%;height:100%;background:#0b0e1a;overflow:hidden;
+  -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+  touch-action:none;overscroll-behavior:none;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+#wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0b0e1a}
+#game{display:block;touch-action:none}
+#vstamp{position:fixed;left:6px;bottom:4px;color:rgba(255,255,255,.35);font-size:10px;z-index:5;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="720" height="1280"></canvas></div>
+<div id="vstamp">v1</div>
+<script>
+/* Portal: none (itch.io / standalone).
+   Sin SDK: el juego corre con localStorage y sin anuncios. */
+/* EGG HEIST BUILD v1 */
+"use strict";
+/* ============================================================
+   EGG HEIST: BRAINROT OBBY — game #10 (Robot Lab)
+   2D auto-runner heist: sprint the obby gauntlet, grab an egg,
+   escape the guards. GREED mechanic: bigger egg = slower &
+   clumsier escape, but rarer mascot + bigger score.
+   Portrait 720x1280, tap-jump, English default (+ES toggle).
+   ============================================================ */
+var FORCE_EN = false; //__FORCE_EN__ (build.py flips to true for portal builds)
+
+var W = 720, H = 1280;
+
+/* ---------------- utils ---------------- */
+function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+function lerp(a,b,t){ return a+(b-a)*t; }
+function rnd(a,b){ return a+Math.random()*(b-a); }
+function irnd(a,b){ return Math.floor(rnd(a,b+1)); }
+function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+function mulberry(seed){ var t=seed>>>0; return function(){ t+=0x6D2B79F5; var r=Math.imul(t^t>>>15,1|t); r^=r+Math.imul(r^r>>>7,61|r); return ((r^r>>>14)>>>0)/4294967296; }; }
+function fmt(n){ return n>=1000 ? (n/1000).toFixed(1).replace(/\.0$/,"")+"k" : String(n); }
+
+/* ---------------- audio (synth, no assets) ---------------- */
+var Sfx = window.Sfx = (function(){
+  var ctx=null, muted=false, master=null;
+  function ac(){
+    if(!ctx){
+      try{
+        var AC = window.AudioContext||window.webkitAudioContext;
+        ctx = new AC(); master = ctx.createGain(); master.gain.value=0.5; master.connect(ctx.destination);
+      }catch(e){ ctx=null; }
+    }
+    if(ctx && ctx.state==="suspended"){ try{ctx.resume();}catch(e){} }
+    return ctx;
+  }
+  function tone(f0,f1,dur,type,vol,when){
+    if(muted) return; var c=ac(); if(!c) return;
+    try{
+      var t=c.currentTime+(when||0);
+      var o=c.createOscillator(), g=c.createGain();
+      o.type=type||"sine"; o.frequency.setValueAtTime(f0,t);
+      o.frequency.exponentialRampToValueAtTime(Math.max(30,f1),t+dur);
+      g.gain.setValueAtTime(vol||0.25,t); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+      o.connect(g); g.connect(master); o.start(t); o.stop(t+dur+0.02);
+    }catch(e){}
+  }
+  function noise(dur,vol,fc,when){
+    if(muted) return; var c=ac(); if(!c) return;
+    try{
+      var t=c.currentTime+(when||0);
+      var len=Math.floor(c.sampleRate*dur), buf=c.createBuffer(1,len,c.sampleRate), d=buf.getChannelData(0);
+      for(var i=0;i<len;i++) d[i]=(Math.random()*2-1)*(1-i/len);
+      var s=c.createBufferSource(); s.buffer=buf;
+      var f=c.createBiquadFilter(); f.type="lowpass"; f.frequency.value=fc||1200;
+      var g=c.createGain(); g.gain.setValueAtTime(vol||0.3,t); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+      s.connect(f); f.connect(g); g.connect(master); s.start(t);
+    }catch(e){}
+  }
+  return {
+    setMuted:function(m){ muted=!!m; },
+    unlock:function(){ ac(); },
+    jump:function(){ tone(300,640,0.16,"square",0.12); },
+    doubleJump:function(){ tone(420,840,0.14,"square",0.12); },
+    coin:function(){ tone(880,1320,0.12,"sine",0.18); tone(1320,1760,0.1,"sine",0.12,0.06); },
+    grab:function(){ tone(200,900,0.25,"sawtooth",0.16); noise(0.2,0.1,2000,0.05); },
+    golden:function(){ var n=[523,659,784,1046,1318]; for(var i=0;i<n.length;i++) tone(n[i],n[i]*1.02,0.22,"triangle",0.2,i*0.09); },
+    alarm:function(){ for(var i=0;i<3;i++){ tone(700,700,0.16,"square",0.14,i*0.34); tone(520,520,0.16,"square",0.14,i*0.34+0.17);} },
+    fail:function(){ tone(400,90,0.5,"sawtooth",0.2); noise(0.35,0.18,700,0.05); },
+    crack:function(){ noise(0.18,0.3,3000); tone(180,60,0.2,"triangle",0.2,0.02); },
+    win:function(){ var n=[523,659,784,1046]; for(var i=0;i<n.length;i++) tone(n[i],n[i],0.3,"triangle",0.2,i*0.12); },
+    hatch:function(){ tone(500,1200,0.3,"sine",0.16); noise(0.25,0.12,4000,0.1); },
+    click:function(){ tone(600,900,0.07,"square",0.1); },
+    vent:function(){ noise(0.3,0.2,900); tone(150,420,0.25,"sine",0.12); },
+    siren:function(){ tone(660,880,0.4,"sawtooth",0.08); },
+    stumble:function(){ tone(220,110,0.2,"square",0.16); noise(0.15,0.12,900); }
+  };
+})();
+
+/* ---------------- text (EN default, ES toggle) ---------------- */
+var STR = {
+en:{
+  tapStart:"TAP TO START", subtitle:"BRAINROT OBBY", tagline:"Steal the egg. Outrun the guards.",
+  how:"Tap = JUMP (x2 = double)", collection:"COLLECTION", best:"BEST",
+  vaultTitle:"THE VAULT", vaultSub:"Pick your egg. Bigger = richer... and SLOWER.",
+  greed:"GREED", speed:"SPEED", score:"SCORE",
+  grab:"GRAB!", radar:"EGG RADAR", radarDesc:"Reveal the GOLDEN egg",
+  escapeTitle:"ESCAPE!", heatLabel:"HEAT", ventHint:"Dive through smoke vents to cool down!",
+  getaway:"GETAWAY VAN", alarm:"ALARM!",
+  failTitle:"BUSTED!", failPit:"You fell into the pit!", failTrap:"The trap got you!", failCaught:"The guards caught you!",
+  revive:"REVIVE", retry:"RETRY", reviveDesc:"Continue right where you fell",
+  resultsTitle:"HEIST COMPLETE!", newBest:"NEW BEST!", next:"NEXT HEIST", again:"RETRY",
+  share:"SHARE CARD", download:"DOWNLOAD", shareSaved:"Card saved — share your heist!",
+  coins:"coins", eggBonus:"egg bonus", timeBonus:"speed bonus", total:"TOTAL",
+  hatched:"HATCHED!", rarity_common:"COMMON", rarity_uncommon:"UNCOMMON", rarity_rare:"RARE",
+  rarity_epic:"EPIC", rarity_legendary:"LEGENDARY",
+  goldenFound:"GOLDEN EGG!", eggSmall:"SMALL", eggMedium:"MEDIUM", eggLarge:"LARGE", eggHuge:"HUGE", eggGolden:"GOLDEN",
+  djump:"DOUBLE JUMP", sjump:"SINGLE JUMP",
+  pause:"PAUSED", resume:"RESUME", quit:"QUIT", sound:"SOUND",
+  locked:"???", owned:"OWNED", back:"BACK", play:"PLAY",
+  interstitial:"", tapJumpHint:"TAP TO JUMP!",
+  theme1:"BARN BREAK-IN", theme2:"CANDY VAULT", theme3:"LAVA LAIR",
+  watchAd:"Watch ad", freeInDev:"FREE",
+  almost:"SO CLOSE!", guardsNear:"GUARDS CLOSING IN!",
+  streak:"HEIST"
+},
+es:{
+  tapStart:"TOCA PARA EMPEZAR", subtitle:"BRAINROT OBBY", tagline:"Roba el huevo. Escapa de los guardias.",
+  how:"Toca = SALTAR (x2 = doble)", collection:"COLECCIÓN", best:"RÉCORD",
+  vaultTitle:"LA BÓVEDA", vaultSub:"Elige tu huevo. Más grande = más rico... y MÁS LENTO.",
+  greed:"AVARICIA", speed:"VELOCIDAD", score:"PUNTOS",
+  grab:"¡AGÁRRALO!", radar:"RADAR DE HUEVOS", radarDesc:"Revela el huevo DORADO",
+  escapeTitle:"¡ESCAPA!", heatLabel:"PELIGRO", ventHint:"¡Cruza las chimeneas de humo para enfriarte!",
+  getaway:"FURGONETA", alarm:"¡ALARMA!",
+  failTitle:"¡ATRAPADO!", failPit:"¡Caíste al foso!", failTrap:"¡La trampa te atrapó!", failCaught:"¡Los guardias te atraparon!",
+  revive:"REVIVIR", retry:"REINTENTAR", reviveDesc:"Continúa donde caíste",
+  resultsTitle:"¡GOLPE COMPLETO!", newBest:"¡NUEVO RÉCORD!", next:"SIGUIENTE GOLPE", again:"REINTENTAR",
+  share:"TARJETA", download:"DESCARGAR", shareSaved:"¡Tarjeta guardada — comparte tu golpe!",
+  coins:"monedas", eggBonus:"bono huevo", timeBonus:"bono velocidad", total:"TOTAL",
+  hatched:"¡NACIÓ!", rarity_common:"COMÚN", rarity_uncommon:"POCO COMÚN", rarity_rare:"RARO",
+  rarity_epic:"ÉPICO", rarity_legendary:"LEGENDARIO",
+  goldenFound:"¡HUEVO DORADO!", eggSmall:"PEQUEÑO", eggMedium:"MEDIANO", eggLarge:"GRANDE", eggHuge:"ENORME", eggGolden:"DORADO",
+  djump:"SALTO DOBLE", sjump:"SALTO SIMPLE",
+  pause:"PAUSA", resume:"SEGUIR", quit:"SALIR", sound:"SONIDO",
+  locked:"???", owned:"OBTENIDO", back:"ATRÁS", play:"JUGAR",
+  interstitial:"", tapJumpHint:"¡TOCA PARA SALTAR!",
+  theme1:"ASALTO AL GRANERO", theme2:"BÓVEDA DULCE", theme3:"GUARIDA DE LAVA",
+  watchAd:"Ver anuncio", freeInDev:"GRATIS",
+  almost:"¡CASI!", guardsNear:"¡GUARDIAS CERCA!",
+  streak:"GOLPE"
+}};
+function T(k){ var L=STR[Game.lang]||STR.en; return (L[k]!==undefined)?L[k]:STR.en[k]; }
+
+/* ---------------- eggs: the GREED mechanic ----------------
+   Bigger egg = slower run, weaker jump, no double jump, faster
+   HEAT gain on escape — but bigger score + rarer mascot.      */
+var EGGS = {
+  S:{ key:"eggSmall", speed:1.00, jump:1.00, dj:true,  heat0:14, heatRate:3.0, score:100,  w:52,  rarity:["common","common","uncommon"] },
+  M:{ key:"eggMedium",speed:0.93, jump:0.95, dj:true,  heat0:22, heatRate:4.2, score:250,  w:64,  rarity:["common","uncommon","uncommon","rare"] },
+  L:{ key:"eggLarge", speed:0.85, jump:0.87, dj:false, heat0:32, heatRate:5.6, score:500,  w:78,  rarity:["uncommon","rare","rare"] },
+  XL:{key:"eggHuge",  speed:0.75, jump:0.78, dj:false, heat0:44, heatRate:7.2, score:1000, w:94,  rarity:["rare","epic","epic"] },
+  G:{ key:"eggGolden",speed:0.66, jump:0.90, dj:false, heat0:56, heatRate:9.0, score:2500, w:100, rarity:["epic","legendary"] }
+};
+var EGG_ORDER = ["S","M","L","XL"];
+
+/* 100% ORIGINAL mascots — absurd, quotable, no licensed IP, no Italian brainrot */
+var MASCOTS = [
+  { id:"scramby",   name:"Scramby",        rarity:"common",    hue:45,  blurb_en:"Wobbles before he walks.", blurb_es:"Se tambalea antes de caminar." },
+  { id:"yolkel",    name:"Yolkel",         rarity:"common",    hue:35,  blurb_en:"Sunny side ALWAYS up.",    blurb_es:"Siempre con el lado soleado arriba." },
+  { id:"sunnysam",  name:"Sunny Sam",      rarity:"common",    hue:50,  blurb_en:"Too cheerful for a heist.", blurb_es:"Demasiado alegre para un golpe." },
+  { id:"shellby",   name:"Shellby",        rarity:"uncommon",  hue:20,  blurb_en:"Wears her shell like armor.", blurb_es:"Lleva su cáscara como armadura." },
+  { id:"omowen",    name:"Omelette Owen",  rarity:"uncommon",  hue:40,  blurb_en:"Folded, never broken.",    blurb_es:"Doblado, nunca roto." },
+  { id:"nuggette",  name:"Nuggette",       rarity:"uncommon",  hue:30,  blurb_en:"Small, golden, unstoppable.", blurb_es:"Pequeña, dorada, imparable." },
+  { id:"devdan",    name:"Deviled Dan",    rarity:"rare",      hue:10,  blurb_en:"Spicy. Handle with care.",  blurb_es:"Picante. Manéjalo con cuidado." },
+  { id:"fritfred",  name:"Frittata Fred",  rarity:"rare",      hue:55,  blurb_en:"Baked under pressure.",    blurb_es:"Horneado bajo presión." },
+  { id:"mermay",    name:"Meringue May",   rarity:"rare",      hue:300, blurb_en:"Light as gossip.",         blurb_es:"Ligera como el chisme." },
+  { id:"benbob",    name:"Benedict Bob",   rarity:"epic",      hue:25,  blurb_en:"Poached to perfection.",   blurb_es:"Escalfado a la perfección." },
+  { id:"quicheq",   name:"Quiche Quinn",   rarity:"epic",      hue:90,  blurb_en:"Fancy. Knows it.",         blurb_es:"Elegante. Lo sabe." },
+  { id:"goldgumbo", name:"Golden Gumbo",   rarity:"legendary", hue:48,  blurb_en:"The one-egg legend.",      blurb_es:"La leyenda de un solo huevo." }
+];
+var RARITY_W = { common:0, uncommon:1, rare:2, epic:3, legendary:4 };
+var RARITY_COLOR = { common:"#9be15d", uncommon:"#4fc3ff", rare:"#b678ff", epic:"#ff7ad9", legendary:"#ffd23f" };
+function hatchEgg(eggId, rng){
+  var pool = EGGS[eggId].rarity;
+  var r = pool[Math.floor(rng()*pool.length)];
+  var cands = MASCOTS.filter(function(m){ return m.rarity===r; });
+  return cands[Math.floor(rng()*cands.length)];
+}
+
+/* vault themes: Barn / Candy / Lava — palette + deco */
+var THEMES = [
+  { key:"theme1", sky0:"#3ec6ff", sky1:"#aee9ff", sun:"#fff6c9", hill1:"#5fce7a", hill2:"#3aa655",
+    ground:"#8a5a33", groundD:"#6b4222", grass:"#58d668", deco:"barn",  fog:"rgba(255,255,255,0)" },
+  { key:"theme2", sky0:"#c86bff", sky1:"#ffd6f5", sun:"#fff0fb", hill1:"#ff9de2", hill2:"#e56bc4",
+    ground:"#a06ee1", groundD:"#7d4fb5", grass:"#ffe066", deco:"candy", fog:"rgba(255,255,255,0)" },
+  { key:"theme3", sky0:"#3a0d2e", sky1:"#a31621", sun:"#ffb703", hill1:"#5c1a1b", hill2:"#3d0f16",
+    ground:"#4a2c2a", groundD:"#331d1c", grass:"#ff6b35", deco:"lava",  fog:"rgba(255,120,40,0.10)" }
+];
+
+/* ---------------- persistent store ---------------- */
+var Store = {
+  pfx:"eggheist_",
+  get:function(k,d){ try{ var v=localStorage.getItem(this.pfx+k); return v===null?d:JSON.parse(v);}catch(e){ return d; } },
+  set:function(k,v){ try{ localStorage.setItem(this.pfx+k, JSON.stringify(v)); }catch(e){} }
+};
+
+/* ---------------- Game state ---------------- */
+var GY = H-230;                 // ground line (feet y)
+var BASE_SPEED = 430, GRAV = 3400, JUMP_V = 1180;
+
+var Game = window.Game = {
+  state:"title",               // title|run|vault|escape|results|fail|collection|share|how
+  paused:false, pausedByAd:false,
+  lang:"en",
+  muted:false,
+  heist:1,                     // heist number (difficulty + theme rotation)
+  theme:0,
+  coins:0, score:0, best:Store.get("best",0),
+  egg:null,                    // egg id once grabbed
+  heat:0,
+  radar:false,                 // egg radar active this heist
+  camX:0,
+  time:0,
+  newBest:false,
+  hatched:null,
+  breakdown:null,
+  failReason:"",
+  banked:0,
+  shareImg:null,
+  vaultEggs:[], goldenSpawned:false,
+  fromState:"title",
+  autoPause:function(p){
+    if(p){ if(this.state==="run"||this.state==="escape"){ this.pausedByAd=true; this.paused=true; } }
+    else { if(this.pausedByAd){ this.pausedByAd=false; this.paused=false; } }
+  }
+};
+Game.best = Store.get("best",0);
+
+/* player */
+var P = { x:0, y:GY, vy:0, onGround:true, airJumps:0, squash:0, runPh:0, inv:0, stumble:0 };
+
+/* current level */
+var LVL = null;
+
+function groundAt(x){
+  if(!LVL) return -1;
+  var gs = LVL.grounds;
+  for(var i=0;i<gs.length;i++){ if(x>=gs[i].x0 && x<=gs[i].x1) return GY; }
+  return -1;
+}
+
+/* ---- level generation (seeded, deterministic) ---- */
+function genGauntlet(theme, heistN, seed){
+  var rng = mulberry(seed);
+  var grounds=[], traps=[], coins=[], plats=[];
+  var x = -120;
+  var diff = clamp(0.6 + heistN*0.12, 0.6, 1.6);
+  // safe intro platform
+  grounds.push({x0:x, x1:x+980}); x += 980;
+  var nChunks = 9 + Math.min(4, Math.floor(heistN/2));
+  for(var c=0;c<nChunks;c++){
+    var r = rng();
+    // gaps must force a jump: blind running falls in (swept landing, no snap)
+    var gapW = Math.min(300, Math.round((200 + rng()*80) * diff));
+    if(c===0) gapW = 200; // first jump is readable: fun in <3s
+    x += gapW;
+    var len = 420 + Math.floor(rng()*380);
+    var g0=x, g1=x+len;
+    grounds.push({x0:g0, x1:g1});
+    // features on this platform
+    var fr = rng();
+    if(fr<0.30 && len>420){
+      // spikes (not on first two chunks)
+      if(c>1){ var sw=70+rng()*60; var sx=g0+120+rng()*Math.max(10,(len-240-sw)); traps.push({kind:"spike",x:sx,w:sw}); }
+    } else if(fr<0.44 && c>1){
+      traps.push({kind:"laser",x:g0+140+rng()*Math.max(10,(len-280)),w:26,ph:rng()*6.28});
+    } else if(fr<0.56 && c>2){
+      var sawx=g0+100+rng()*Math.max(10,(len-200)); traps.push({kind:"saw",x0:g0+60,x1:g1-60,x:sawx,dir:1,sp:140+rng()*80});
+    } else if(fr<0.72){
+      // high platform with coins
+      var pw=170+rng()*120, px=g0+80+rng()*Math.max(10,(len-160-pw));
+      plats.push({x0:px,x1:px+pw,y:GY-260});
+      for(var k=0;k<5;k++) coins.push({x:px+20+k*(pw-40)/4, y:GY-330, got:false});
+    }
+    // coin arc over the gap we just crossed (reward the jump)
+    var nA = 3+Math.floor(rng()*3);
+    for(var a=0;a<nA;a++) coins.push({x:g0- gapW + (a+0.5)/nA*gapW, y:GY-190-Math.sin(a/(nA-1)*Math.PI)*60, got:false});
+    x = g1;
+  }
+  // vault platform (long, safe)
+  x += 90;
+  var vx0=x; grounds.push({x0:vx0, x1:vx0+1100});
+  var vaultX = vx0+820;
+  return { grounds:grounds, traps:traps, coins:coins, plats:plats, vents:[],
+           length:vx0+1100, vaultX:vaultX, theme:theme, seed:seed, kind:"gauntlet" };
+}
+
+function genEscape(theme, heistN, seed, eggId){
+  var rng = mulberry(seed^0x9e37);
+  var grounds=[], traps=[], coins=[], plats=[], vents=[];
+  var x = -120;
+  var diff = clamp(0.7 + heistN*0.14, 0.7, 1.8);
+  grounds.push({x0:x, x1:x+760}); x += 760;
+  var nChunks = 10 + Math.min(4, Math.floor(heistN/2));
+  var ventAt = [0.3, 0.6, 0.85]; var vi=0;
+  for(var c=0;c<nChunks;c++){
+    // escape gaps stay crossable even for the GOLDEN egg (short jump range):
+    // difficulty comes from HEAT + traps, not pits
+    var gapW = Math.min(170, Math.round(120 + rng()*50*diff));
+    x += gapW;
+    var len = 400 + Math.floor(rng()*360);
+    var g0=x, g1=x+len;
+    grounds.push({x0:g0, x1:g1});
+    var fr = rng();
+    if(fr<0.34 && c>0){ var sw=80+rng()*70; traps.push({kind:"spike",x:g0+100+rng()*Math.max(10,(len-200-sw)),w:sw}); }
+    else if(fr<0.50 && c>0){ traps.push({kind:"laser",x:g0+120+rng()*Math.max(10,(len-240)),w:26,ph:rng()*6.28}); }
+    else if(fr<0.62 && c>1){ var sx=g0+80+rng()*Math.max(10,(len-160)); traps.push({kind:"saw",x0:g0+50,x1:g1-50,x:sx,dir:1,sp:170+rng()*110}); }
+    else if(fr<0.74){ var pw=160+rng()*120, px=g0+60+rng()*Math.max(10,(len-120-pw)); plats.push({x0:px,x1:px+pw,y:GY-260});
+      for(var k=0;k<5;k++) coins.push({x:px+20+k*(pw-40)/4, y:GY-330, got:false}); }
+    // smoke vent (heat relief) at scripted fractions
+    if(vi<ventAt.length && (c+1)/nChunks >= ventAt[vi]){ vents.push({x:g0+len/2, used:false}); vi++; }
+    var nA = 2+Math.floor(rng()*3);
+    for(var a=0;a<nA;a++) coins.push({x:g0-gapW+(a+0.5)/nA*gapW, y:GY-190-Math.sin(a/(nA-1)*Math.PI)*60, got:false});
+    x = g1;
+  }
+  x += 90;
+  var gx0=x; grounds.push({x0:gx0, x1:gx0+900});
+  var vanX = gx0+620;
+  return { grounds:grounds, traps:traps, coins:coins, plats:plats, vents:vents,
+           length:gx0+900, vanX:vanX, theme:theme, seed:seed, kind:"escape", egg:eggId };
+}
+
+/* ---- flow ---- */
+function startHeist(n){
+  Game.heist = n||1;
+  Game.theme = (Game.heist-1)%THEMES.length;
+  Game.coins=0; Game.score=0; Game.egg=null; Game.heat=0; Game.radar=false;
+  Game.newBest=false; Game.hatched=null; Game.banked=Store.get("banked",0);
+  Game.time=0;
+  var seed = (Date.now()%100000)|0;
+  LVL = genGauntlet(Game.theme, Game.heist, seed);
+  resetPlayer(-40);
+  Game.state="run";
+  Game.camX = P.x-200;
+  banner = { txt:T("tapJumpHint"), t:2.2 };
+  if(window.Portal && Portal.gameplayStart) try{ Portal.gameplayStart(); }catch(e){}
+}
+
+function resetPlayer(x){
+  P.x=x; P.y=GY; P.vy=0; P.onGround=true; P.airJumps=0; P.squash=0; P.runPh=0; P.inv=0; P.stumble=0;
+  lastSafeX = x;
+}
+
+var lastSafeX = -40;
+
+function enterVault(){
+  Game.state="vault";
+  Sfx.win();
+  // choose 4 pedestals: S/M/L/XL shuffled, golden 25% (or radar-guaranteed)
+  var ids = EGG_ORDER.slice();
+  for(var i=ids.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=ids[i]; ids[i]=ids[j]; ids[j]=t; }
+  Game.goldenSpawned = Game.radar ? true : (Math.random()<0.25);
+  Game.vaultEggs = ids;
+  Game.vaultT = 0;
+  if(window.Portal && Portal.gameplayStop) try{ Portal.gameplayStop(); }catch(e){}
+}
+
+function grabEgg(id){
+  Game.egg = id;
+  var E = EGGS[id];
+  Game.state = "escape";
+  var seed = (Date.now()%100000)|0;
+  LVL = genEscape(Game.theme, Game.heist, seed, id);
+  resetPlayer(-40);
+  Game.heat = E.heat0;
+  Game.coinsAtGrab = Game.coins;
+  Game.escapeT = 0;
+  banner = { txt:T("escapeTitle"), t:1.6 };
+  Sfx.grab(); Sfx.alarm();
+  if(id==="G") Sfx.golden();
+  if(window.Portal && Portal.gameplayStart) try{ Portal.gameplayStart(); }catch(e){}
+}
+
+function fail(reason){
+  if(Game.state!=="run" && Game.state!=="escape") return;
+  Game.state="fail"; Game.failReason=reason;
+  Sfx.fail(); if(reason==="pit") Sfx.crack();
+  failAnim = 0;
+  if(window.Portal && Portal.gameplayStop) try{ Portal.gameplayStop(); }catch(e){}
+}
+
+function winHeist(){
+  Game.state="results";
+  var E = EGGS[Game.egg];
+  var coinScore = Game.coins*10;
+  var eggScore = E.score;
+  var timeBonus = Math.max(0, Math.round(1200 - Game.escapeT*40));
+  var total = coinScore + eggScore + timeBonus;
+  Game.score = total;
+  Game.breakdown = { coins:coinScore, egg:eggScore, time:timeBonus, total:total };
+  Game.newBest = total > Game.best;
+  if(Game.newBest){ Game.best = total; Store.set("best", total); }
+  // hatch mascot
+  var m = hatchEgg(Game.egg, Math.random);
+  Game.hatched = m;
+  var owned = Store.get("mascots",{});
+  owned[m.id]=true; Store.set("mascots",owned);
+  Game.banked = Store.get("banked",0)+1; Store.set("banked",Game.banked);
+  Sfx.win(); setTimeout(function(){ Sfx.hatch(); }, 500);
+  if(window.Portal && Portal.gameplayStop) try{ Portal.gameplayStop(); }catch(e){}
+}
+
+function revive(){
+  // rewarded revive: back at last safe spot, heat cooled, brief invulnerability
+  var E = EGGS[Game.egg||"S"];
+  if(Game.state==="fail" && Game.failReason==="pit" || Game.egg){
+    // escape revive
+  }
+  P.x = lastSafeX; P.y = GY; P.vy = 0; P.onGround = true; P.inv = 2.0; P.stumble=0;
+  Game.heat = Math.max(10, E.heat0*0.6);
+  for(var i=0;i<LVL.vents.length;i++) LVL.vents[i].used=false;
+  Game.state = Game.egg ? "escape" : "run";
+  Sfx.jump();
+  if(window.Portal && Portal.gameplayStart) try{ Portal.gameplayStart(); }catch(e){}
+}
+
+function retryHeist(){ startHeist(Game.heist); }
+function nextHeist(){
+  if(window.Portal && Portal.showInterstitial){ try{ Portal.showInterstitial(); }catch(e){} }
+  startHeist(Game.heist+1);
+}
+
+/* ---- physics step (fixed dt) ---- */
+function jump(){
+  if(Game.paused) return;
+  if(Game.state!=="run" && Game.state!=="escape") return;
+  var E = Game.egg ? EGGS[Game.egg] : null;
+  var dj = E ? E.dj : true;
+  var jm = E ? E.jump : 1;
+  if(P.onGround){
+    P.vy = -JUMP_V*jm; P.onGround=false; P.airJumps=1; P.squash=-0.25;
+    Sfx.jump(); dust(P.x, P.y, 6);
+  } else if(dj && P.airJumps<2){
+    P.vy = -JUMP_V*jm*0.92; P.airJumps=2; P.squash=-0.2;
+    Sfx.doubleJump(); dust(P.x, P.y, 8);
+  }
+}
+
+function stepPhysics(dt){
+  if(Game.paused) return;
+  Game.time += dt;
+  var E = Game.egg ? EGGS[Game.egg] : null;
+  var speed = BASE_SPEED * (E?E.speed:1);
+  if(P.stumble>0){ P.stumble-=dt; speed*=0.45; }
+  if(P.inv>0) P.inv-=dt;
+  P.runPh += dt*(8+ (E? (1-E.speed)*6 : 0));
+  if(P.squash<0) P.squash = Math.min(0, P.squash+dt*3);
+  else if(P.squash>0) P.squash = Math.max(0, P.squash-dt*3);
+
+  P.x += speed*dt;
+  P.vy += GRAV*dt;
+  P.y += P.vy*dt;
+
+  // platforms (high)
+  var footY = P.y;
+  var landed = false;
+  for(var i=0;i<LVL.plats.length;i++){
+    var pl=LVL.plats[i];
+    if(P.x>pl.x0-14 && P.x<pl.x1+14 && P.vy>=0 && footY>=pl.y && footY-P.vy*dt<=pl.y+1){
+      P.y=pl.y; P.vy=0; P.onGround=true; P.airJumps=0; landed=true; break;
+    }
+  }
+  // ground: swept landing — only snap when crossing the ground plane this
+  // step (running blindly off a ledge must NOT re-attach over a gap)
+  if(!landed){
+    var g = groundAt(P.x);
+    if(g>=0 && P.vy>=0 && P.y>=g && (P.y-P.vy*dt)<=g+4){
+      if(!P.onGround && P.vy>900){ P.squash=0.3; dust(P.x,g,8); }
+      P.y=g; P.vy=0; P.onGround=true; P.airJumps=0; landed=true;
+      lastSafeX = P.x;
+    } else if(g<0){
+      P.onGround=false;
+    }
+  }
+  if(P.y > H+240){ fail("pit"); return; }
+
+  // traps (skip while invulnerable)
+  if(P.inv<=0){
+    for(var t=0;t<LVL.traps.length;t++){
+      var tr=LVL.traps[t];
+      if(tr.kind==="spike"){
+        if(P.x>tr.x-10 && P.x<tr.x+tr.w+10 && P.y>GY-70){ fail("trap"); return; }
+      } else if(tr.kind==="laser"){
+        var on = (Math.sin(Game.time*4+tr.ph)>0);
+        tr._on = on;
+        if(on && Math.abs(P.x-tr.x)<34 && P.y>GY-320){ fail("trap"); return; }
+      } else if(tr.kind==="saw"){
+        tr.x += tr.dir*tr.sp*dt;
+        if(tr.x<tr.x0){tr.x=tr.x0;tr.dir=1;} if(tr.x>tr.x1){tr.x=tr.x1;tr.dir=-1;}
+        var dx=P.x-tr.x, dy=P.y-(GY-40);
+        if(dx*dx+dy*dy < 70*70 && P.y>GY-140){ fail("trap"); return; }
+      }
+    }
+  }
+  // coins
+  for(var c=0;c<LVL.coins.length;c++){
+    var cn=LVL.coins[c];
+    if(!cn.got && Math.abs(P.x-cn.x)<44 && Math.abs(P.y-40-cn.y)<70){
+      cn.got=true; Game.coins++; Sfx.coin(); sparkle(cn.x,cn.y,"#ffd23f",6);
+    }
+  }
+  // vents (escape): cool the heat
+  if(LVL.kind==="escape"){
+    for(var v=0;v<LVL.vents.length;v++){
+      var vn=LVL.vents[v];
+      if(!vn.used && Math.abs(P.x-vn.x)<60 && P.y<GY-40){
+        vn.used=true; Game.heat=Math.max(0,Game.heat-28); Sfx.vent();
+        smokeBurst(vn.x, GY-120); banner={txt:"-HEAT!", t:0.9};
+      }
+    }
+    Game.heat += E.heatRate*dt;
+    Game.escapeT += dt;
+    if(Game.heat>=100){ fail("caught"); return; }
+    if(Game.heat>80 && !Game._warned){ Game._warned=true; Sfx.siren(); }
+    if(Game.heat<60) Game._warned=false;
+  }
+  // vault arrival
+  if(LVL.kind==="gauntlet" && P.x>=LVL.vaultX){ enterVault(); return; }
+  // getaway van arrival
+  if(LVL.kind==="escape" && P.x>=LVL.vanX){ winHeist(); return; }
+
+  Game.camX = P.x-200;
+  updateParticles(dt);
+}
+
+/* ---------------- particles ---------------- */
+var parts = [];
+function spawn(x,y,vx,vy,life,size,col,grav,shape){
+  if(parts.length>420) parts.shift();
+  parts.push({x:x,y:y,vx:vx,vy:vy,life:life,max:life,size:size,col:col,grav:grav||0,shape:shape||"c"});
+}
+function dust(x,y,n){ for(var i=0;i<n;i++) spawn(x+rnd(-14,14),y+rnd(-6,2),rnd(-90,90),rnd(-160,-30),rnd(.3,.6),rnd(4,9),"rgba(255,255,255,.85)",500); }
+function sparkle(x,y,col,n){ for(var i=0;i<n;i++) spawn(x,y,rnd(-160,160),rnd(-220,40),rnd(.4,.8),rnd(3,7),col,300,"s"); }
+function smokeBurst(x,y){ for(var i=0;i<16;i++) spawn(x+rnd(-24,24),y,rnd(-40,40),rnd(-320,-120),rnd(.6,1.1),rnd(10,22),"rgba(220,230,240,.75)",-60); }
+function confetti(x,y,n){ var cols=["#ffd23f","#ff5d8f","#4fc3ff","#9be15d","#b678ff"]; for(var i=0;i<n;i++) spawn(x+rnd(-40,40),y,rnd(-260,260),rnd(-420,-80),rnd(.8,1.4),rnd(5,10),pick(cols),700,"r"); }
+function yolkSplat(x,y){ for(var i=0;i<22;i++) spawn(x+rnd(-20,20),y,rnd(-220,220),rnd(-320,-40),rnd(.6,1),rnd(5,12),i%3?"#ffcf3f":"#fff3c9",900); }
+function updateParticles(dt){
+  for(var i=parts.length-1;i>=0;i--){ var p=parts[i]; p.life-=dt;
+    if(p.life<=0){ parts.splice(i,1); continue; }
+    p.vy+=p.grav*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; }
+}
+
+/* ---------------- canvas / layout ---------------- */
+var cvs = document.getElementById("game");
+var ctx = cvs.getContext("2d");
+function fit(){
+  var ww=window.innerWidth, wh=window.innerHeight;
+  var s=Math.min(ww/W, wh/H);
+  cvs.style.width=(W*s)+"px"; cvs.style.height=(H*s)+"px";
+}
+window.addEventListener("resize", fit); fit();
+
+function rr(c,x,y,w,h,r){
+  c.beginPath(); c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r);
+  c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath();
+}
+function circle(c,x,y,r){ c.beginPath(); c.arc(x,y,r,0,6.2832); }
+function txt(c,s,x,y,size,col,align,stroke,lw){
+  c.font="900 "+size+"px system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif";
+  c.textAlign=align||"center"; c.textBaseline="middle";
+  if(stroke){ c.lineWidth=lw||Math.max(3,size/10); c.strokeStyle=stroke; c.strokeText(s,x,y); }
+  c.fillStyle=col; c.fillText(s,x,y);
+}
+var OUTLINE="#23233a";
+
+/* ---------------- background ---------------- */
+function drawBackground(th, camX, t){
+  var g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,th.sky0); g.addColorStop(0.62,th.sky1); g.addColorStop(1,th.sky1);
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // sun glow
+  var sg=ctx.createRadialGradient(W-140,170,10,W-140,170,260);
+  sg.addColorStop(0,th.sun); sg.addColorStop(1,"rgba(255,255,255,0)");
+  ctx.fillStyle=sg; ctx.fillRect(0,0,W,H);
+  // parallax hills (2 layers)
+  for(var L=0;L<2;L++){
+    var par=L?0.35:0.18, baseY=L?GY-40:GY-190, amp=L?60:110, col=L?th.hill2:th.hill1;
+    ctx.fillStyle=col; ctx.beginPath(); ctx.moveTo(0,H);
+    for(var x=0;x<=W;x+=24){
+      var wx=x+camX*par;
+      var y=baseY+Math.sin(wx*0.008+L*2.1)*amp+Math.sin(wx*0.021+L)*amp*0.35;
+      ctx.lineTo(x,y);
+    }
+    ctx.lineTo(W,H); ctx.closePath(); ctx.fill();
+  }
+  // clouds
+  ctx.fillStyle="rgba(255,255,255,.85)";
+  for(var i=0;i<6;i++){
+    var cx=((i*340 - camX*0.12)%1100+1100)%1100-190, cy=90+((i*167)%260);
+    var s=0.7+((i*53)%40)/55;
+    ctx.beginPath();
+    ctx.arc(cx,cy,34*s,0,6.29); ctx.arc(cx+34*s,cy-12*s,28*s,0,6.29); ctx.arc(cx+66*s,cy,30*s,0,6.29);
+    ctx.fill();
+  }
+  // theme deco silhouettes
+  ctx.save(); ctx.globalAlpha=0.5;
+  if(th.deco==="barn"){
+    ctx.fillStyle="#7c4a2d";
+    for(var b=0;b<4;b++){ var bx=((b*520-camX*0.5)%1400+1400)%1400-200;
+      ctx.fillRect(bx,GY-330,120,120); // barn body
+      ctx.beginPath(); ctx.moveTo(bx-16,GY-210); ctx.lineTo(bx+60,GY-280); ctx.lineTo(bx+136,GY-210); ctx.closePath(); ctx.fill();
+    }
+  } else if(th.deco==="candy"){
+    for(var l=0;l<5;l++){ var lx=((l*430-camX*0.5)%1300+1300)%1300-160;
+      ctx.strokeStyle="#ff8fd0"; ctx.lineWidth=14; ctx.beginPath(); ctx.moveTo(lx,GY-60); ctx.lineTo(lx,GY-300); ctx.stroke();
+      ctx.fillStyle=l%2?"#ff5d8f":"#7ad9ff"; circle(ctx,lx,GY-340,34); ctx.fill();
+      ctx.strokeStyle=OUTLINE; ctx.lineWidth=5; circle(ctx,lx,GY-340,34); ctx.stroke();
+    }
+  } else {
+    for(var r2=0;r2<5;r2++){ var rx=((r2*470-camX*0.5)%1350+1350)%1350-180;
+      ctx.fillStyle="#2b0d12"; ctx.beginPath();
+      ctx.moveTo(rx,GY-60); ctx.lineTo(rx+50,GY-260-(r2*37)%120); ctx.lineTo(rx+100,GY-60); ctx.closePath(); ctx.fill();
+      ctx.fillStyle="#ff6b35"; ctx.beginPath(); ctx.arc(rx+50,GY-60,16,0,6.29); ctx.fill();
+    }
+  }
+  ctx.restore();
+  if(th.fog && th.fog!=="rgba(255,255,255,0)"){ ctx.fillStyle=th.fog; ctx.fillRect(0,0,W,H); }
+}
+
+/* ---------------- world ---------------- */
+function drawGrounds(th, camX){
+  for(var i=0;i<LVL.grounds.length;i++){
+    var g0=LVL.grounds[i], x0=g0.x0-camX, x1=g0.x1-camX;
+    if(x1<-60||x0>W+60) continue;
+    var w=x1-x0;
+    // dirt body
+    ctx.fillStyle=th.ground; rr(ctx,x0,GY,w,H-GY+40,26); ctx.fill();
+    ctx.fillStyle=th.groundD;
+    for(var s=0;s<w/46;s++){ var sx=x0+20+s*46; ctx.fillRect(sx,GY+44,16,10); }
+    // grassy top with thick outline (sticker look)
+    ctx.fillStyle=th.grass; rr(ctx,x0-6,GY-26,w+12,52,26); ctx.fill();
+    ctx.lineWidth=7; ctx.strokeStyle=OUTLINE; rr(ctx,x0-6,GY-26,w+12,52,26); ctx.stroke();
+    ctx.fillStyle="rgba(255,255,255,.35)";
+    rr(ctx,x0+8,GY-20,Math.min(120,w-16),10,5); ctx.fill();
+  }
+  // high platforms
+  for(var p=0;p<LVL.plats.length;p++){
+    var pl=LVL.plats[p], px0=pl.x0-camX, px1=pl.x1-camX;
+    if(px1<-60||px0>W+60) continue;
+    ctx.fillStyle=th.ground; rr(ctx,px0,pl.y,px1-px0,34,17); ctx.fill();
+    ctx.lineWidth=6; ctx.strokeStyle=OUTLINE; rr(ctx,px0,pl.y,px1-px0,34,17); ctx.stroke();
+    ctx.fillStyle=th.grass; rr(ctx,px0-4,pl.y-16,px1-px0+8,32,16); ctx.fill();
+    ctx.lineWidth=6; ctx.strokeStyle=OUTLINE; rr(ctx,px0-4,pl.y-16,px1-px0+8,32,16); ctx.stroke();
+  }
+}
+
+function drawTraps(th, camX, t){
+  for(var i=0;i<LVL.traps.length;i++){
+    var tr=LVL.traps[i], x=tr.x-camX;
+    if(x<-120||x>W+120) continue;
+    if(tr.kind==="spike"){
+      ctx.fillStyle="#e8ecf5"; ctx.strokeStyle=OUTLINE; ctx.lineWidth=6;
+      var n=Math.max(2,Math.round(tr.w/44));
+      ctx.beginPath(); ctx.moveTo(x-8,GY-8);
+      for(var s=0;s<n;s++){ ctx.lineTo(x-8+(s+0.5)*(tr.w+16)/n,GY-78); ctx.lineTo(x-8+(s+1)*(tr.w+16)/n,GY-8); }
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle="#ff5d5d"; circle(ctx,x+tr.w/2,GY-30,7); ctx.fill();
+    } else if(tr.kind==="laser"){
+      var on = tr._on!==undefined ? tr._on : (Math.sin(Game.time*4+tr.ph)>0);
+      // posts
+      ctx.fillStyle="#3a3f5c"; rr(ctx,x-14,GY-330,28,330,10); ctx.fill();
+      ctx.lineWidth=5; ctx.strokeStyle=OUTLINE; rr(ctx,x-14,GY-330,28,330,10); ctx.stroke();
+      ctx.fillStyle=on?"#ff3b3b":"#5a5f7a"; circle(ctx,x,GY-330,13); ctx.fill();
+      ctx.lineWidth=4; ctx.strokeStyle=OUTLINE; circle(ctx,x,GY-330,13); ctx.stroke();
+      if(on){
+        var bg=ctx.createLinearGradient(x-14,0,x+14,0);
+        bg.addColorStop(0,"rgba(255,60,60,0)"); bg.addColorStop(0.5,"rgba(255,80,80,.95)"); bg.addColorStop(1,"rgba(255,60,60,0)");
+        ctx.fillStyle=bg; ctx.fillRect(x-16,GY-320,32,320);
+        ctx.fillStyle="#fff"; ctx.fillRect(x-3,GY-320,6,320);
+      } else {
+        ctx.fillStyle="rgba(255,80,80,.18)"; ctx.fillRect(x-10,GY-320,20,320);
+      }
+    } else if(tr.kind==="saw"){
+      var sx2=tr.x-camX;
+      ctx.save(); ctx.translate(sx2,GY-40); ctx.rotate(t*9*tr.dir);
+      ctx.fillStyle="#cfd6e4"; ctx.strokeStyle=OUTLINE; ctx.lineWidth=7;
+      ctx.beginPath();
+      for(var a2=0;a2<12;a2++){ var an=a2/12*6.2832;
+        ctx.lineTo(Math.cos(an)*46,Math.sin(an)*46);
+        ctx.lineTo(Math.cos(an+0.26)*30,Math.sin(an+0.26)*30);
+      }
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle="#ff5d5d"; circle(ctx,0,0,12); ctx.fill();
+      ctx.lineWidth=4; ctx.strokeStyle=OUTLINE; circle(ctx,0,0,12); ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+function drawCoinsVents(th, camX, t){
+  for(var i=0;i<LVL.coins.length;i++){
+    var c=LVL.coins[i]; if(c.got) continue;
+    var x=c.x-camX; if(x<-40||x>W+40) continue;
+    var bob=Math.sin(t*5+c.x*0.05)*6;
+    var g=ctx.createLinearGradient(x-14,0,x+14,0);
+    g.addColorStop(0,"#ffdf6b"); g.addColorStop(0.5,"#ffb703"); g.addColorStop(1,"#ffdf6b");
+    ctx.fillStyle=g; ctx.strokeStyle=OUTLINE; ctx.lineWidth=5;
+    var sq=Math.abs(Math.sin(t*4+c.x*0.02));
+    ctx.save(); ctx.translate(x,c.y+bob); ctx.scale(0.35+0.65*sq,1);
+    circle(ctx,0,0,17); ctx.fill(); ctx.stroke();
+    ctx.fillStyle="#a35b00"; ctx.font="900 22px system-ui,sans-serif"; ctx.textAlign="center"; ctx.textBaseline="middle";
+    ctx.fillText("$",0,1);
+    ctx.restore();
+  }
+  for(var v=0;v<LVL.vents.length;v++){
+    var vn=LVL.vents[v], vx=vn.x-camX; if(vx<-80||vx>W+80) continue;
+    if(vn.used) continue;
+    var puff=(t*1.4+vn.x)%1;
+    ctx.fillStyle="rgba(225,232,240,"+(0.55*(1-puff))+")";
+    circle(ctx,vx,GY-60-puff*170,26+puff*30); ctx.fill();
+    ctx.fillStyle="#5a6274"; rr(ctx,vx-44,GY-40,88,44,12); ctx.fill();
+    ctx.lineWidth=6; ctx.strokeStyle=OUTLINE; rr(ctx,vx-44,GY-40,88,44,12); ctx.stroke();
+    ctx.fillStyle="#9aa3b5";
+    for(var hh=0;hh<3;hh++) ctx.fillRect(vx-30+hh*24,GY-34,10,28);
+    if(Math.sin(t*6)>0) txt(ctx,"SMOKE!",vx,GY-330,26,"#ffffff","center","#23233a",6);
+  }
+}
+
+/* ---------------- eggs / mascots / characters ---------------- */
+function drawEggShape(c,x,y,w,eggId,sparkT){
+  var h=w*1.25;
+  var golden = eggId==="G";
+  var g=c.createLinearGradient(x-w/2,0,x+w/2,0);
+  if(golden){ g.addColorStop(0,"#ffe27a"); g.addColorStop(0.5,"#ffc93c"); g.addColorStop(1,"#e8a100"); }
+  else { g.addColorStop(0,"#fff7e6"); g.addColorStop(0.55,"#ffe9c4"); g.addColorStop(1,"#f5c98a"); }
+  c.fillStyle=g; c.strokeStyle=OUTLINE; c.lineWidth=Math.max(5,w*0.09);
+  c.beginPath(); c.ellipse(x,y,w/2,h/2,0,0,6.2832); c.fill(); c.stroke();
+  // glossy highlight
+  c.fillStyle="rgba(255,255,255,.75)";
+  c.beginPath(); c.ellipse(x-w*0.2,y-h*0.22,w*0.11,h*0.16,-0.5,0,6.2832); c.fill();
+  if(golden && sparkT!==undefined){
+    c.fillStyle="#fff";
+    for(var i=0;i<4;i++){ var a=sparkT*2+i*1.7, sx=x+Math.cos(a)*w*0.75, sy=y+Math.sin(a)*h*0.6;
+      var s2=5+3*Math.sin(sparkT*6+i); c.save(); c.translate(sx,sy); c.rotate(a);
+      c.fillRect(-s2,-1.5,s2*2,3); c.fillRect(-1.5,-s2,3,s2*2); c.restore(); }
+  }
+  if(!golden){
+    c.fillStyle="rgba(214,164,110,.5)";
+    c.beginPath(); c.ellipse(x+w*0.22,y+h*0.2,w*0.09,h*0.07,0.4,0,6.2832); c.fill();
+  }
+}
+
+function drawMascot(c,m,x,y,s,blinkT){
+  // absurd original chick blob, hue-tinted, rarity ring
+  var col="hsl("+m.hue+",85%,68%)", dark="hsl("+m.hue+",60%,42%)";
+  if(RARITY_W[m.rarity]>=3){
+    c.strokeStyle=RARITY_COLOR[m.rarity]; c.lineWidth=6; c.globalAlpha=0.7+0.3*Math.sin(blinkT*4);
+    circle(c,x,y,s*0.95); c.stroke(); c.globalAlpha=1;
+  }
+  var wob=Math.sin(blinkT*5)*0.06;
+  c.save(); c.translate(x,y); c.rotate(wob);
+  c.fillStyle=col; c.strokeStyle=OUTLINE; c.lineWidth=Math.max(4,s*0.09);
+  c.beginPath(); c.ellipse(0,0,s*0.72,s*0.8,0,0,6.2832); c.fill(); c.stroke();
+  // wings
+  c.fillStyle=dark;
+  c.beginPath(); c.ellipse(-s*0.68,0,s*0.2,s*0.34,-0.5,0,6.2832); c.fill(); c.stroke();
+  c.beginPath(); c.ellipse(s*0.68,0,s*0.2,s*0.34,0.5,0,6.2832); c.fill(); c.stroke();
+  // beak
+  c.fillStyle="#ff9f1c"; c.beginPath();
+  c.moveTo(-s*0.16,-s*0.05); c.lineTo(s*0.16,-s*0.05); c.lineTo(0,s*0.18); c.closePath(); c.fill(); c.stroke();
+  // eyes
+  var bl=Math.sin(blinkT*0.7)>0.97?0.12:1;
+  c.fillStyle="#fff";
+  c.beginPath(); c.ellipse(-s*0.26,-s*0.32,s*0.2,s*0.2*bl,0,0,6.2832); c.fill(); c.stroke();
+  c.beginPath(); c.ellipse(s*0.26,-s*0.32,s*0.2,s*0.2*bl,0,0,6.2832); c.fill(); c.stroke();
+  if(bl>0.5){ c.fillStyle=OUTLINE; circle(c,-s*0.22,-s*0.3,s*0.08); c.fill(); circle(c,s*0.3,-s*0.3,s*0.08); c.fill(); }
+  // tuft
+  c.strokeStyle=OUTLINE; c.lineWidth=Math.max(3,s*0.07); c.lineCap="round";
+  c.beginPath(); c.moveTo(0,-s*0.78); c.quadraticCurveTo(-s*0.1,-s*1.02,-s*0.24,-s*0.94); c.stroke();
+  c.beginPath(); c.moveTo(0,-s*0.78); c.quadraticCurveTo(s*0.12,-s*1.04,s*0.26,-s*0.92); c.stroke();
+  c.restore();
+}
+
+function drawPlayer(px,py,t){
+  var sq=P.squash, stretch=clamp(-P.vy/2400,-0.35,0.3);
+  var sy=1+stretch*0.5-sq*0.6, sx=1-stretch*0.3+sq*0.5;
+  if(!P.onGround && P.vy<0){ sy=1.18; sx=0.86; }
+  var bob=P.onGround?Math.abs(Math.sin(P.runPh))*6:0;
+  ctx.save(); ctx.translate(px,py-bob); ctx.scale(sx,sy);
+  if(P.inv>0 && Math.floor(t*12)%2===0) ctx.globalAlpha=0.45;
+  var R=44;
+  // tail
+  var wag=Math.sin(P.runPh*1.4)*10;
+  ctx.fillStyle="#6f7186"; ctx.strokeStyle=OUTLINE; ctx.lineWidth=7;
+  ctx.beginPath(); ctx.ellipse(-R-16,-16+wag,26,15,-0.5,0,6.2832); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle="#4a4c60"; ctx.lineWidth=5;
+  ctx.beginPath(); ctx.moveTo(-R-30,-24+wag); ctx.lineTo(-R-6,-10+wag); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-R-32,-8+wag); ctx.lineTo(-R-8,4+wag); ctx.stroke();
+  // body
+  var bg=ctx.createLinearGradient(0,-R,0,R);
+  bg.addColorStop(0,"#a7a9bd"); bg.addColorStop(1,"#7c7e94");
+  ctx.fillStyle=bg; ctx.strokeStyle=OUTLINE; ctx.lineWidth=8;
+  ctx.beginPath(); ctx.ellipse(0,-R+6,R,R*0.96,0,0,6.2832); ctx.fill(); ctx.stroke();
+  // ears
+  ctx.fillStyle="#7c7e94";
+  ctx.beginPath(); ctx.moveTo(-R+8,-R-38); ctx.lineTo(-R+30,-R-52); ctx.lineTo(-R+34,-R-22); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(R-8,-R-38); ctx.lineTo(R-30,-R-52); ctx.lineTo(R-34,-R-22); ctx.closePath(); ctx.fill(); ctx.stroke();
+  // bandit mask
+  ctx.fillStyle="#23233a"; rr(ctx,-R+2,-R-16,(R-2)*2,44,22); ctx.fill();
+  // eyes
+  var look=clamp(P.vy/2000,-1,1)*4;
+  ctx.fillStyle="#fff"; circle(ctx,-20,-R+6,13); ctx.fill(); circle(ctx,20,-R+6,13); ctx.fill();
+  ctx.fillStyle=OUTLINE; circle(ctx,-17+look,-R+8,6); ctx.fill(); circle(ctx,23+look,-R+8,6); ctx.fill();
+  ctx.fillStyle="#fff"; circle(ctx,-19+look,-R+5,2); ctx.fill(); circle(ctx,21+look,-R+5,2); ctx.fill();
+  // snout + nose
+  ctx.fillStyle="#c9cbd8"; ctx.beginPath(); ctx.ellipse(0,-R+34,17,12,0,0,6.2832); ctx.fill(); ctx.strokeStyle=OUTLINE; ctx.lineWidth=5; ctx.stroke();
+  ctx.fillStyle=OUTLINE; ctx.beginPath(); ctx.ellipse(0,-R+30,7,5,0,0,6.2832); ctx.fill();
+  // feet
+  var f1=Math.sin(P.runPh)*12, f2=-f1;
+  ctx.fillStyle="#4a4c60";
+  if(P.onGround){
+    ctx.beginPath(); ctx.ellipse(-16,f1*0.3,15,10,0,0,6.2832); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(16,f2*0.3,15,10,0,0,6.2832); ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.ellipse(-14,6,15,10,0.4,0,6.2832); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(16,2,15,10,-0.4,0,6.2832); ctx.fill();
+  }
+  ctx.restore();
+  // carried egg (escape): wobbling on head
+  if(Game.egg && (Game.state==="escape"||Game.state==="vault"||Game.state==="fail"||Game.state==="results")){
+    var E=EGGS[Game.egg], wob2=Math.sin(t*7)*0.14;
+    ctx.save(); ctx.translate(px,py-bob-96); ctx.rotate(wob2);
+    drawEggShape(ctx,0,0,E.w*0.9,Game.egg,t);
+    ctx.restore();
+  }
+}
+
+function drawChasers(camX,t){
+  if(Game.state!=="escape"&&Game.state!=="fail") return;
+  var heat=Game.state==="fail"?100:Game.heat;
+  var back=lerp(640,110,clamp(heat/100,0,1));
+  for(var i=0;i<2;i++){
+    var cx=P.x-back-i*130, sx=cx-camX;
+    if(sx<-100) continue;
+    var hop=Math.abs(Math.sin(t*9+i*2))*14;
+    ctx.save(); ctx.translate(sx,GY-hop);
+    ctx.fillStyle="rgba(20,20,40,.9)"; ctx.strokeStyle="#0a0a18"; ctx.lineWidth=7;
+    var R2=40;
+    ctx.beginPath(); ctx.ellipse(0,-R2,R2,R2*1.02,0,0,6.2832); ctx.fill(); ctx.stroke();
+    // cap
+    ctx.fillStyle="#31437a"; rr(ctx,-R2,-R2-34,R2*2,30,8); ctx.fill(); ctx.strokeStyle=OUTLINE; ctx.lineWidth=5; rr(ctx,-R2,-R2-34,R2*2,30,8); ctx.stroke();
+    // red visor eyes
+    ctx.fillStyle="#ff3b3b";
+    var glow=ctx.createRadialGradient(0,-R2+4,2,0,-R2+4,26);
+    glow.addColorStop(0,"#ff8080"); glow.addColorStop(1,"#c00");
+    ctx.fillStyle=glow; rr(ctx,-30,-R2-6,60,24,12); ctx.fill();
+    ctx.fillStyle="#fff"; txt(ctx,"!",0,-R2-78,44,"#ffdf3b","center","#7a1010",8);
+    ctx.restore();
+  }
+}
+
+/* ---------------- HUD + buttons ---------------- */
+var UI = { hits:[] };
+function hit(x,y,w,h,act){ UI.hits.push({x:x,y:y,w:w,h:h,act:act}); }
+function button(x,y,w,h,label,col,fs){
+  fs=fs||40;
+  ctx.save();
+  ctx.fillStyle="rgba(0,0,0,.25)"; rr(ctx,x+4,y+7,w,h,24); ctx.fill();
+  var g=ctx.createLinearGradient(0,y,0,y+h);
+  g.addColorStop(0,col); g.addColorStop(1,shade(col,-28));
+  ctx.fillStyle=g; rr(ctx,x,y,w,h,24); ctx.fill();
+  ctx.lineWidth=6; ctx.strokeStyle="#fff"; rr(ctx,x+4,y+4,w-8,h-8,20); ctx.stroke();
+  ctx.lineWidth=6; ctx.strokeStyle=OUTLINE; rr(ctx,x,y,w,h,24); ctx.stroke();
+  txt(ctx,label,x+w/2,y+h/2+2,fs,"#fff","center",OUTLINE,6);
+  ctx.restore();
+  hit(x,y,w,h,"btn:"+label);
+  return "btn:"+label;
+}
+function shade(hex,amt){
+  var n=parseInt(hex.slice(1),16), r=(n>>16)+amt, g=((n>>8)&255)+amt, b=(n&255)+amt;
+  r=clamp(r,0,255); g=clamp(g,0,255); b=clamp(b,0,255);
+  return "#"+((r<<16)|(g<<8)|b).toString(16).padStart(6,"0");
+}
+function iconBtn(x,y,r,label,act){
+  ctx.fillStyle="rgba(20,22,44,.55)"; circle(ctx,x,y,r); ctx.fill();
+  ctx.lineWidth=5; ctx.strokeStyle="#fff"; circle(ctx,x,y,r); ctx.stroke();
+  txt(ctx,label,x,y+1,r*0.95,"#fff","center",OUTLINE,5);
+  UI.hits.push({x:x-r,y:y-r,w:r*2,h:r*2,act:act});
+}
+function drawHUD(t){
+  // coins
+  ctx.fillStyle="rgba(20,22,44,.55)"; rr(ctx,16,16,190,64,32); ctx.fill();
+  var g=ctx.createLinearGradient(0,0,34,0); g.addColorStop(0,"#ffdf6b"); g.addColorStop(1,"#ffb703");
+  ctx.fillStyle=g; circle(ctx,50,48,20); ctx.fill();
+  ctx.lineWidth=4; ctx.strokeStyle=OUTLINE; circle(ctx,50,48,20); ctx.stroke();
+  txt(ctx,"$",50,49,26,"#a35b00");
+  txt(ctx,String(Game.coins),130,50,34,"#fff","center",OUTLINE,6);
+  // progress bar
+  var prog = LVL.kind==="gauntlet" ? clamp(P.x/LVL.vaultX,0,1) : clamp(P.x/LVL.vanX,0,1);
+  ctx.fillStyle="rgba(20,22,44,.55)"; rr(ctx,220,24,284,48,24); ctx.fill();
+  ctx.fillStyle="#4fc3ff"; rr(ctx,228,32,268*prog,32,16); ctx.fill();
+  txt(ctx,LVL.kind==="gauntlet"?"VAULT":"VAN",362,49,24,"#fff","center",OUTLINE,5);
+  iconBtn(W-56,48,34,"II","pause");
+  iconBtn(W-140,48,34,Game.muted?"✕":"♪","mute");
+  // heat meter (escape)
+  if(Game.state==="escape"){
+    var hw=560, hx=(W-hw)/2, hy=104;
+    ctx.fillStyle="rgba(20,22,44,.6)"; rr(ctx,hx-8,hy-8,hw+16,56,28); ctx.fill();
+    var hg=ctx.createLinearGradient(hx,0,hx+hw,0);
+    hg.addColorStop(0,"#9be15d"); hg.addColorStop(0.55,"#ffd23f"); hg.addColorStop(1,"#ff3b3b");
+    ctx.fillStyle="rgba(255,255,255,.18)"; rr(ctx,hx,hy,hw,40,20); ctx.fill();
+    ctx.fillStyle=hg; rr(ctx,hx,hy,hw*clamp(Game.heat/100,0,1),40,20); ctx.fill();
+    ctx.lineWidth=5; ctx.strokeStyle="#fff"; rr(ctx,hx,hy,hw,40,20); ctx.stroke();
+    txt(ctx,T("heatLabel"),hx+hw/2,hy+20,26,"#fff","center",OUTLINE,6);
+    if(Game.heat>80) txt(ctx,T("guardsNear"),W/2,hy+78,30,"#ff5d5d","center","#fff",7);
+  }
+  if(banner && banner.t>0){
+    var a=clamp(banner.t,0,1);
+    ctx.globalAlpha=a;
+    txt(ctx,banner.txt,W/2,H*0.3,54,"#fff","center",OUTLINE,10);
+    ctx.globalAlpha=1;
+  }
+}
+var banner=null, failAnim=0;
+
+/* ---------------- vault scene ---------------- */
+function drawVaultScene(t){
+  var th=THEMES[Game.theme];
+  var camX=Game.camX;
+  drawBackground(th,camX,t);
+  drawGrounds(th,camX);
+  // big vault door (behind, offset right of the player)
+  var dx=LVL.vaultX-camX+170;
+  ctx.fillStyle="#5a6274"; rr(ctx,dx-110,GY-400,220,400,26); ctx.fill();
+  ctx.lineWidth=10; ctx.strokeStyle=OUTLINE; rr(ctx,dx-110,GY-400,220,400,26); ctx.stroke();
+  ctx.fillStyle="#3a3f5c"; circle(ctx,dx,GY-200,56); ctx.fill();
+  ctx.lineWidth=8; ctx.strokeStyle="#ffd23f"; circle(ctx,dx,GY-200,56); ctx.stroke();
+  ctx.fillStyle="#ffd23f";
+  for(var s=0;s<6;s++){ var an=s/6*6.283+t*0.6; ctx.fillRect(dx+Math.cos(an)*56-5,GY-200+Math.sin(an)*56-5,10,10); }
+  txt(ctx,"VAULT",dx,GY-362,36,"#ffd23f","center",OUTLINE,7);
+  // pedestals
+  Game._ped=[];
+  var ids=Game.vaultEggs.slice();
+  if(Game.goldenSpawned) ids.push("G");
+  var n=ids.length, pw=W/Math.max(n,1);
+  for(var i=0;i<n;i++){
+    var ex=pw*i+pw/2, ey=H-330+Math.sin(t*3+i)*8;
+    var isG=ids[i]==="G";
+    var hidden=isG&&!Game.radar&&!Game._goldRevealed;
+    // pedestal
+    ctx.fillStyle="#3a3f5c"; rr(ctx,ex-70,H-260,140,60,14); ctx.fill();
+    ctx.lineWidth=6; ctx.strokeStyle=OUTLINE; rr(ctx,ex-70,H-260,140,60,14); ctx.stroke();
+    if(hidden){
+      txt(ctx,"?",ex,ey-40,90,"#ffd23f","center",OUTLINE,10);
+      txt(ctx,"???",ex,ey+70,30,"#fff","center",OUTLINE,6);
+    } else {
+      var pulse=isG?1+Math.sin(t*6)*0.08:1;
+      ctx.save(); ctx.translate(ex,ey-30); ctx.scale(pulse,pulse);
+      drawEggShape(ctx,0,0,EGGS[ids[i]].w*1.15,ids[i],t);
+      ctx.restore();
+      var E=EGGS[ids[i]];
+      txt(ctx,T(E.key),ex,ey+64,30,isG?"#ffd23f":"#fff","center",OUTLINE,6);
+      // greed/speed mini bars
+      var spd=E.speed, grd=1-spd;
+      ctx.fillStyle="rgba(20,22,44,.6)"; rr(ctx,ex-80,ey+92,160,16,8); ctx.fill();
+      ctx.fillStyle="#4fc3ff"; rr(ctx,ex-80,ey+92,160*spd,16,8); ctx.fill();
+      ctx.fillStyle="rgba(20,22,44,.6)"; rr(ctx,ex-80,ey+114,160,16,8); ctx.fill();
+      ctx.fillStyle="#ff5d8f"; rr(ctx,ex-80,ey+114,160*clamp(grd*1.6,0,1),16,8); ctx.fill();
+    }
+    Game._ped.push({x:ex-90,y:ey-160,w:180,h:280,id:ids[i],hidden:hidden});
+  }
+  drawPlayer(P.x-camX, P.y, t); // player on top, in front of the vault
+}
+function drawVaultUI(t){
+  ctx.fillStyle="rgba(10,12,26,.72)"; ctx.fillRect(0,0,W,250);
+  txt(ctx,T("vaultTitle"),W/2,64,52,"#ffd23f","center",OUTLINE,9);
+  txt(ctx,T("vaultSub"),W/2,122,27,"#fff","center",OUTLINE,5);
+  // legend: blue dot = SPEED, pink dot = GREED (matches the mini bars under each egg)
+  ctx.fillStyle="#4fc3ff"; circle(ctx,W/2-150,172,11); ctx.fill();
+  txt(ctx,T("speed"),W/2-132,173,24,"#4fc3ff","left");
+  ctx.fillStyle="#ff5d8f"; circle(ctx,W/2+40,172,11); ctx.fill();
+  txt(ctx,T("greed"),W/2+58,173,24,"#ff5d8f","left");
+  if(!Game.goldenSpawned)
+    button(W/2-190,H-120,380,84,T("radar")+"  •  "+(window.Portal&&Portal.rewarded?T("watchAd"):T("freeInDev")),"#b678ff",32);
+  else if(!Game._goldRevealed && !Game.radar)
+    txt(ctx,T("goldenFound"),W/2,H-80,36,"#ffd23f","center",OUTLINE,7);
+}
+
+/* ---------------- screens ---------------- */
+function drawTitle(t){
+  var th=THEMES[0];
+  drawBackground(th, t*40, t);
+  // mascot parade
+  for(var i=0;i<5;i++){
+    var m=MASCOTS[(i*3)%MASCOTS.length];
+    drawMascot(ctx,MASCOTS[i*2], 90+i*135, GY-210+Math.sin(t*4+i)*14, 44, t+i);
+  }
+  ctx.fillStyle="#8a5a33"; ctx.fillRect(0,GY,W,H-GY);
+  ctx.fillStyle="#58d668"; ctx.fillRect(0,GY-14,W,30);
+  // logo
+  var bob=Math.sin(t*2.4)*8;
+  txt(ctx,"EGG HEIST",W/2,330+bob,110,"#ffd23f","center",OUTLINE,16);
+  txt(ctx,"BRAINROT OBBY",W/2,420+bob,52,"#fff","center",OUTLINE,10);
+  txt(ctx,T("tagline"),W/2,492+bob,30,"#ffe9c4","center",OUTLINE,6);
+  // egg mascot hero
+  drawEggShape(ctx,W/2,660+bob,120,"G",t);
+  drawPlayer(W/2-190, 760+bob, t);
+  // tap to start (pulsing)
+  var p=1+Math.sin(t*5)*0.06;
+  ctx.save(); ctx.translate(W/2,950); ctx.scale(p,p);
+  txt(ctx,T("tapStart"),0,0,46,"#fff","center",OUTLINE,9);
+  ctx.restore();
+  txt(ctx,T("how"),W/2,1010,26,"#cfe3ff","center",OUTLINE,5);
+  if(Game.best>0) txt(ctx,T("best")+": "+fmt(Game.best),W/2,1070,30,"#ffd23f","center",OUTLINE,6);
+  button(W/2-260,1130,240,80,T("collection"),"#4fc3ff",34);
+  button(W/2+20,1130,240,80,T("sound")+": "+(Game.muted?"OFF":"ON"),"#b678ff",30);
+  if(!FORCE_EN) iconBtn(W-56,H-56,34,Game.lang==="en"?"ES":"EN","lang");
+  UI.hits.push({x:0,y:0,w:W,h:H,act:"start"});
+}
+function drawFail(t){
+  var th=THEMES[Game.theme];
+  drawBackground(th,Game.camX,t);
+  if(LVL) { drawGrounds(th,Game.camX); drawTraps(th,Game.camX,t); drawCoinsVents(th,Game.camX,t); drawChasers(Game.camX,t); }
+  failAnim+=1/60;
+  // cracked egg
+  var ex=W/2, ey=H/2-120;
+  if(Game.failReason==="pit"||Game.failReason==="trap"){
+    yolkSplatOnce(ex,ey);
+    drawEggShape(ctx,ex,ey,90,Game.egg||"S",t);
+    ctx.strokeStyle=OUTLINE; ctx.lineWidth=7;
+    ctx.beginPath(); ctx.moveTo(ex-30,ey-50); ctx.lineTo(ex-8,ey-18); ctx.lineTo(ex-28,ey+8); ctx.lineTo(ex-2,ey+40); ctx.stroke();
+  } else {
+    // caught: guards celebrating
+    drawPlayer(ex-160,ey+120,t);
+    ctx.fillStyle="rgba(20,20,40,.95)"; circle(ctx,ex+120,ey+60,64); ctx.fill();
+    ctx.lineWidth=7; ctx.strokeStyle=OUTLINE; circle(ctx,ex+120,ey+60,64); ctx.stroke();
+    ctx.fillStyle="#ff3b3b"; rr(ctx,ex+120-40,ey+44,80,30,14); ctx.fill();
+    txt(ctx,"GOTCHA!",ex+120,ey-60,40,"#ff5d5d","center","#fff",8);
+  }
+  ctx.fillStyle="rgba(10,12,26,.55)"; ctx.fillRect(0,0,W,H);
+  txt(ctx,T("failTitle"),W/2,300,84,"#ff5d5d","center","#fff",12);
+  var msg = Game.failReason==="pit"?T("failPit"):Game.failReason==="trap"?T("failTrap"):T("failCaught");
+  txt(ctx,msg,W/2,380,34,"#fff","center",OUTLINE,6);
+  var rw = window.Portal&&Portal.rewarded;
+  button(W/2-280,520,560,96,T("revive")+"  •  "+(rw?T("watchAd"):T("freeInDev")), "#9be15d",40);
+  txt(ctx,T("reviveDesc"),W/2,648,26,"#cfe3ff","center",OUTLINE,5);
+  button(W/2-280,700,560,96,T("retry"),"#4fc3ff",40);
+  button(W/2-280,820,560,96,T("quit"),"#8a8fa8",40);
+}
+var _yolkDone=false;
+function yolkSplatOnce(x,y){ if(!_yolkDone){ _yolkDone=true; yolkSplat(x,y); Sfx.crack(); } }
+function drawResults(t){
+  var th=THEMES[Game.theme];
+  drawBackground(th,Game.camX,t);
+  ctx.fillStyle="rgba(10,12,26,.62)"; ctx.fillRect(0,0,W,H);
+  txt(ctx,T("resultsTitle"),W/2,150,64,"#ffd23f","center",OUTLINE,11);
+  if(Game.newBest) txt(ctx,T("newBest"),W/2,215,36,"#9be15d","center",OUTLINE,7);
+  // hatch reveal
+  var m=Game.hatched, rt=(t%4);
+  if(rt<1.2){
+    var sh=Math.min(1,rt/1.2);
+    ctx.save(); ctx.translate(W/2,430); ctx.scale(sh,sh);
+    drawEggShape(ctx,0,0,110,Game.egg,t); ctx.restore();
+    if(rt>0.9&&!Game._cracked){ Game._cracked=true; Sfx.crack(); yolkSplat(W/2,430); }
+  } else {
+    if(!Game._mascotShown){ Game._mascotShown=true; confetti(W/2,430,60); }
+    var pop=1+Math.sin(Math.min(1,(rt-1.2)*3)*3.14)*0.25;
+    ctx.save(); ctx.translate(W/2,430); ctx.scale(pop,pop);
+    drawMascot(ctx,m,0,0,84,t); ctx.restore();
+    txt(ctx,T("hatched"),W/2,300,34,"#fff","center",OUTLINE,6);
+    txt(ctx,m.name,W/2,540,44,RARITY_COLOR[m.rarity],"center",OUTLINE,8);
+    txt(ctx,T("rarity_"+m.rarity),W/2,590,30,RARITY_COLOR[m.rarity],"center",OUTLINE,6);
+  }
+  // score breakdown
+  var b=Game.breakdown, by=680;
+  ctx.fillStyle="rgba(20,22,44,.6)"; rr(ctx,W/2-260,by-40,520,220,24); ctx.fill();
+  ctx.lineWidth=5; ctx.strokeStyle="#fff"; rr(ctx,W/2-260,by-40,520,220,24); ctx.stroke();
+  txt(ctx,T("coins")+": +"+b.coins,W/2,by+10,30,"#ffd23f");
+  txt(ctx,T("eggBonus")+": +"+b.egg,W/2,by+56,30,"#ff9f1c");
+  txt(ctx,T("timeBonus")+": +"+b.time,W/2,by+102,30,"#4fc3ff");
+  txt(ctx,T("total")+": "+fmt(b.total),W/2,by+152,40,"#fff","center",OUTLINE,7);
+  button(W/2-280,940,560,88,T("share"),"#ff5d8f",38);
+  button(W/2-280,1044,270,80,T("next"),"#9be15d",34);
+  button(W/2+10,1044,270,80,T("collection"),"#4fc3ff",32);
+}
+function drawCollection(t){
+  ctx.fillStyle="#14172b"; ctx.fillRect(0,0,W,H);
+  txt(ctx,T("collection"),W/2,90,54,"#ffd23f","center",OUTLINE,10);
+  var owned=Store.get("mascots",{});
+  var n=0;
+  for(var r2=0;r2<3;r2++) for(var c2=0;c2<4;c2++){
+    var m=MASCOTS[n]; n++;
+    var x=110+c2*170, y=250+r2*250;
+    ctx.fillStyle="rgba(255,255,255,.07)"; rr(ctx,x-80,y-110,160,220,20); ctx.fill();
+    if(owned[m.id]){
+      drawMascot(ctx,m,x,y-20,52,t+n);
+      txt(ctx,m.name,x,y+80,24,"#fff","center",OUTLINE,5);
+      txt(ctx,T("rarity_"+m.rarity),x,y+108,20,RARITY_COLOR[m.rarity],"center");
+    } else {
+      txt(ctx,"?",x,y-10,70,"#4a4e6e","center");
+      txt(ctx,T("locked"),x,y+80,24,"#4a4e6e","center");
+    }
+  }
+  button(W/2-200,1030,400,90,T("back"),"#4fc3ff",36);
+}
+function drawShare(t){
+  ctx.fillStyle="#14172b"; ctx.fillRect(0,0,W,H);
+  txt(ctx,T("share"),W/2,90,54,"#ffd23f","center",OUTLINE,10);
+  if(Game.shareImg){
+    var iw=420, ih=420*1350/1080;
+    ctx.drawImage(Game.shareImg,W/2-iw/2,150,iw,ih);
+  }
+  button(W/2-280,980,560,90,T("download"),"#9be15d",38);
+  button(W/2-280,1090,560,90,T("back"),"#4fc3ff",38);
+}
+function drawPaused(){
+  ctx.fillStyle="rgba(10,12,26,.7)"; ctx.fillRect(0,0,W,H);
+  txt(ctx,T("pause"),W/2,420,64,"#fff","center",OUTLINE,10);
+  button(W/2-240,540,480,90,T("resume"),"#9be15d",38);
+  button(W/2-240,660,480,90,T("sound")+": "+(Game.muted?"OFF":"ON"),"#b678ff",34);
+  button(W/2-240,780,480,90,T("quit"),"#8a8fa8",38);
+}
+
+/* ---------------- share card ---------------- */
+function renderShareCard(){
+  var cw=1080, ch=1350;
+  var oc=document.createElement("canvas"); oc.width=cw; oc.height=ch;
+  var c=oc.getContext("2d");
+  var th=THEMES[Game.theme];
+  var g=c.createLinearGradient(0,0,0,ch);
+  g.addColorStop(0,th.sky0); g.addColorStop(1,th.sky1);
+  c.fillStyle=g; c.fillRect(0,0,cw,ch);
+  c.fillStyle="rgba(255,255,255,.85)";
+  for(var i=0;i<5;i++){ c.beginPath(); c.arc(120+i*220,140+(i%2)*60,44,0,6.29); c.fill(); }
+  var old=ctx;
+  // reuse draw routines on offscreen ctx by temp swap
+  drawEggShapeOn(c, cw/2, 560, 190, Game.egg, 1.2);
+  drawMascot(c, Game.hatched, cw/2, 900, 120, 1.2);
+  txtOn(c,"EGG HEIST",cw/2,150,120,"#ffd23f","center","#23233a",18);
+  txtOn(c,"BRAINROT OBBY",cw/2,250,54,"#fff","center","#23233a",10);
+  txtOn(c,Game.hatched.name+"  •  "+T("rarity_"+Game.hatched.rarity).toUpperCase(),cw/2,1080,48,RARITY_COLOR[Game.hatched.rarity],"center","#23233a",9);
+  txtOn(c,"SCORE: "+fmt(Game.breakdown.total),cw/2,1160,64,"#fff","center","#23233a",11);
+  txtOn(c,"Can YOU steal the GOLDEN egg?",cw/2,1260,40,"#ffe9c4","center","#23233a",7);
+  Game.shareImg=oc;
+}
+function drawEggShapeOn(c,x,y,w,eggId,sparkT){
+  var h=w*1.25, golden=eggId==="G";
+  var g=c.createLinearGradient(x-w/2,0,x+w/2,0);
+  if(golden){ g.addColorStop(0,"#ffe27a"); g.addColorStop(0.5,"#ffc93c"); g.addColorStop(1,"#e8a100"); }
+  else { g.addColorStop(0,"#fff7e6"); g.addColorStop(0.55,"#ffe9c4"); g.addColorStop(1,"#f5c98a"); }
+  c.fillStyle=g; c.strokeStyle=OUTLINE; c.lineWidth=Math.max(6,w*0.09);
+  c.beginPath(); c.ellipse(x,y,w/2,h/2,0,0,6.2832); c.fill(); c.stroke();
+  c.fillStyle="rgba(255,255,255,.75)";
+  c.beginPath(); c.ellipse(x-w*0.2,y-h*0.22,w*0.11,h*0.16,-0.5,0,6.2832); c.fill();
+}
+function txtOn(c,s,x,y,size,col,align,stroke,lw){
+  c.font="900 "+size+"px system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif";
+  c.textAlign=align||"center"; c.textBaseline="middle";
+  if(stroke){ c.lineWidth=lw||Math.max(3,size/10); c.strokeStyle=stroke; c.strokeText(s,x,y); }
+  c.fillStyle=col; c.fillText(s,x,y);
+}
+function downloadShare(){
+  try{
+    var a=document.createElement("a");
+    a.download="egg-heist-card.png";
+    a.href=Game.shareImg.toDataURL("image/png");
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    banner={txt:T("shareSaved"),t:2};
+  }catch(e){}
+}
+
+/* ---------------- render dispatch ---------------- */
+function render(t){
+  UI.hits.length=0;
+  if(Game.state!==Game._lastState){
+    Game._lastState=Game.state;
+    Game._cracked=false; Game._mascotShown=false; _yolkDone=false;
+    if(Game.state==="results"||Game.state==="share") renderShareCard();
+  }
+  var th=THEMES[Game.theme];
+  ctx.clearRect(0,0,W,H);
+  if(Game.state==="title"){ drawTitle(t); return; }
+  if(Game.state==="collection"){ drawCollection(t); return; }
+  if(Game.state==="share"){ drawShare(t); return; }
+  if(Game.state==="fail"){ drawFail(t); updateParticles(1/60); drawParts(); return; }
+  if(Game.state==="results"){ drawResults(t); updateParticles(1/60); drawParts(); return; }
+  // run / vault / escape
+  var camX=Game.camX;
+  drawBackground(th,camX,t);
+  if(Game.state==="vault"){ drawVaultScene(t); drawVaultUI(t); drawParts(); return; }
+  drawGrounds(th,camX);
+  drawTraps(th,camX,t);
+  drawCoinsVents(th,camX,t);
+  if(Game.state==="escape"){
+    // getaway van at the end
+    var vx=LVL.vanX-camX;
+    if(vx>-300&&vx<W+300){
+      ctx.fillStyle="#ff9f1c"; rr(ctx,vx-120,GY-190,240,190,24); ctx.fill();
+      ctx.lineWidth=8; ctx.strokeStyle=OUTLINE; rr(ctx,vx-120,GY-190,240,190,24); ctx.stroke();
+      ctx.fillStyle="#bfe9ff"; rr(ctx,vx-90,GY-160,90,60,12); ctx.fill();
+      ctx.lineWidth=5; ctx.strokeStyle=OUTLINE; rr(ctx,vx-90,GY-160,90,60,12); ctx.stroke();
+      ctx.fillStyle="#23233a"; circle(ctx,vx-60,GY-30,26); ctx.fill(); circle(ctx,vx+60,GY-30,26); ctx.fill();
+      txt(ctx,T("getaway"),vx,GY-230,30,"#fff","center",OUTLINE,6);
+    }
+  }
+  drawChasers(camX,t);
+  drawPlayer(P.x-camX, P.y, t);
+  drawParts();
+  drawHUD(t);
+  if(Game.paused) drawPaused();
+}
+function drawParts(){
+  for(var i=0;i<parts.length;i++){ var p=parts[i];
+    ctx.globalAlpha=clamp(p.life/p.max,0,1);
+    ctx.fillStyle=p.col;
+    if(p.shape==="r"){ ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.life*6); ctx.fillRect(-p.size/2,-p.size/2,p.size,p.size*0.6); ctx.restore(); }
+    else if(p.shape==="s"){ ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.life*4);
+      ctx.fillRect(-p.size,-1.5,p.size*2,3); ctx.fillRect(-1.5,-p.size,3,p.size*2); ctx.restore(); }
+    else { circle(ctx,p.x,p.y,p.size); ctx.fill(); }
+  }
+  ctx.globalAlpha=1;
+}
+/* particles: world-space spawns are converted to screen space at spawn time */
+var _spawn=spawn;
+spawn=function(x,y,vx,vy,life,size,col,grav,shape){
+  if(Game.state==="run"||Game.state==="escape") x=x-Game.camX;
+  _spawn(x,y,vx,vy,life,size,col,grav,shape);
+};
+
+/* ---------------- input ---------------- */
+function toLogical(cx,cy){
+  var r=cvs.getBoundingClientRect();
+  return { x:(cx-r.left)*W/r.width, y:(cy-r.top)*H/r.height };
+}
+function doRewarded(cb){
+  var P2=window.Portal;
+  if(P2 && P2.rewarded && typeof P2.showRewarded==="function"){ try{ P2.showRewarded(function(ok){ cb(!!ok); }); }catch(e){ cb(true); } }
+  else cb(true); // dev build: rewarded actions are free
+}
+function onTap(lx,ly){
+  Sfx.unlock();
+  // pause menu has priority
+  if(Game.paused){
+    for(var i=0;i<UI.hits.length;i++){ var hb=UI.hits[i];
+      if(lx>=hb.x&&lx<=hb.x+hb.w&&ly>=hb.y&&ly<=hb.y+hb.h){ doBtn(hb.act); return; } }
+    return;
+  }
+  // vault pedestals first
+  if(Game.state==="vault" && Game._ped){
+    for(var p=0;p<Game._ped.length;p++){ var pd=Game._ped[p];
+      if(lx>=pd.x&&lx<=pd.x+pd.w&&ly>=pd.y&&ly<=pd.y+pd.h){
+        if(pd.hidden){ Sfx.click(); banner={txt:"???",t:0.8}; return; }
+        Sfx.click(); grabEgg(pd.id); return;
+      }
+    }
+  }
+  for(var j=0;j<UI.hits.length;j++){ var h2=UI.hits[j];
+    if(lx>=h2.x&&lx<=h2.x+h2.w&&ly>=h2.y&&ly<=h2.y+h2.h){ doBtn(h2.act); return; } }
+  // default tap action per state
+  if(Game.state==="title") startHeist(1);
+  else if(Game.state==="run"||Game.state==="escape"){ jump(); if(window.Portal&&Portal.gameplayStart){try{Portal.gameplayStart();}catch(e){}} }
+}
+function doBtn(act){
+  Sfx.click();
+  var label=act.indexOf("btn:")===0?act.slice(4):act;
+  if(act==="start"){ startHeist(1); return; }
+  if(act==="pause"){ Game.paused=true; if(window.Portal&&Portal.gameplayStop){try{Portal.gameplayStop();}catch(e){}} return; }
+  if(act==="mute"){ Game.muted=!Game.muted; Sfx.setMuted(Game.muted); return; }
+  if(act==="lang"){ Game.lang=Game.lang==="en"?"es":"en"; return; }
+  switch(label){
+    case T("collection"): Game.fromState=Game.state; Game.state="collection"; break;
+    case T("back"): Game.state=(Game.fromState==="results"||Game.fromState==="title")?Game.fromState:"title"; break;
+    case T("sound")+": "+(Game.muted?"OFF":"ON"): case T("sound")+": "+(!Game.muted?"OFF":"ON"):
+      Game.muted=!Game.muted; Sfx.setMuted(Game.muted); break;
+    case T("revive")+"  •  "+(window.Portal&&window.Portal.rewarded?T("watchAd"):T("freeInDev")):
+    case T("revive"):
+      doRewarded(function(ok){ if(ok) revive(); }); break;
+    case T("retry"): case T("again"): retryHeist(); break;
+    case T("quit"): Game.paused=false; Game.state="title";
+      if(window.Portal&&Portal.gameplayStop){try{Portal.gameplayStop();}catch(e){}} break;
+    case T("resume"): Game.paused=false;
+      if(window.Portal&&Portal.gameplayStart){try{Portal.gameplayStart();}catch(e){}} break;
+    case T("next"): nextHeist(); break;
+    case T("share"): Game.fromState="results"; Game.state="share"; renderShareCard(); break;
+    case T("download"): downloadShare(); break;
+    case T("radar")+"  •  "+(window.Portal&&window.Portal.rewarded?T("watchAd"):T("freeInDev")):
+      doRewarded(function(ok){ if(ok){ Game.radar=true; Game.goldenSpawned=true; Game._goldRevealed=true;
+        Sfx.golden(); banner={txt:T("goldenFound"),t:2}; } });
+      break;
+  }
+}
+cvs.addEventListener("pointerdown", function(e){
+  e.preventDefault();
+  var l=toLogical(e.clientX,e.clientY);
+  onTap(l.x,l.y);
+});
+document.addEventListener("visibilitychange", function(){
+  if(document.hidden && (Game.state==="run"||Game.state==="escape")) Game.paused=true;
+});
+
+/* ---------------- main loop (fixed timestep) ---------------- */
+var lastTs=0, acc=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  var now=ts/1000, dt=Math.min(0.1, now-(lastTs||now)); lastTs=now;
+  if(!Game.paused && (Game.state==="run"||Game.state==="escape")){
+    acc+=dt; var n=0;
+    while(acc>1/120 && n<14){ stepPhysics(1/120); acc-=1/120; n++;
+      if(Game.state!=="run"&&Game.state!=="escape"){ acc=0; break; } }
+  } else if(Game.state==="title"||Game.state==="vault"){
+    updateParticles(dt);
+  }
+  if(banner&&banner.t>0) banner.t-=dt;
+  render(now);
+}
+
+/* ---------------- self-test (?test=1) ---------------- */
+var SelfTest={pass:0,total:0,fails:0,done:false,firstFail:""};
+function ST(name,cond){
+  SelfTest.total++;
+  if(cond) SelfTest.pass++;
+  else { SelfTest.fails++; if(!SelfTest.firstFail) SelfTest.firstFail=name; }
+}
+function runSelfTest(){
+  SelfTest.pass=0; SelfTest.total=0; SelfTest.fails=0; SelfTest.done=false; SelfTest.firstFail="";
+  try{
+    ST("EN default", Game.lang==="en");
+    ST("STR keys match", Object.keys(STR.en).every(function(k){return STR.es[k]!==undefined;}));
+    ST("12 mascots unique", MASCOTS.length===12 && new Set(MASCOTS.map(function(m){return m.id;})).size===12);
+    ST("no italian brainrot names", !MASCOTS.some(function(m){return /tralal|tung|cappuc|bombard|ballerina/i.test(m.name);}));
+    ST("egg greed ordering", EGGS.S.speed>EGGS.M.speed&&EGGS.M.speed>EGGS.L.speed&&EGGS.L.speed>EGGS.XL.speed&&EGGS.XL.speed>EGGS.G.speed);
+    ST("egg score ordering", EGGS.S.score<EGGS.M.score&&EGGS.M.score<EGGS.L.score&&EGGS.L.score<EGGS.XL.score&&EGGS.XL.score<EGGS.G.score);
+    ST("S/M double jump, L+ single", EGGS.S.dj&&EGGS.M.dj&&!EGGS.L.dj&&!EGGS.XL.dj&&!EGGS.G.dj);
+    var g1=genGauntlet(0,1,12345), g2=genGauntlet(0,1,12345);
+    ST("gauntlet deterministic", g1.length===g2.length && g1.grounds.length===g2.grounds.length);
+    ST("vault far enough", g1.vaultX>3000);
+    ST("gauntlet has gaps", g1.grounds.length>=8);
+    ST("escape has 3 vents", genEscape(0,1,999,"M").vents.length===3);
+    ST("escape has van", genEscape(0,1,999,"M").vanX>3000);
+    ST("themes=3", THEMES.length===3);
+    var rng=mulberry(7);
+    for(var e=0;e<40;e++){
+      var id=["S","M","L","XL","G"][e%5], m=hatchEgg(id,rng);
+      ST("hatch "+id+" in pool", EGGS[id].rarity.indexOf(m.rarity)>=0);
+    }
+    // physics: jump then land
+    LVL=genGauntlet(0,1,42); resetPlayer(100); Game.state="run"; Game.egg=null; Game.heat=0;
+    jump(); ST("jump vy<0", P.vy<0 && !P.onGround);
+    for(var s=0;s<110;s++) stepPhysics(1/120); // 0.92s: lands (~0.69s airtime) before platform edge
+    ST("lands back", P.onGround && Game.state==="run");
+    // double jump with S
+    Game.egg="S"; resetPlayer(100); jump();
+    for(var s2=0;s2<20;s2++) stepPhysics(1/120);
+    var vyBefore=P.vy; jump(); ST("double jump re-launches", P.vy<vyBefore-50);
+    // no double jump with XL
+    Game.egg="XL"; resetPlayer(100); jump();
+    for(var s3=0;s3<20;s3++) stepPhysics(1/120);
+    var v2=P.vy; jump(); ST("XL no double jump", !(P.vy<v2-50));
+    Game.egg=null;
+    // pit fail: drop into the middle of the first gap
+    resetPlayer(100); P.x=LVL.grounds[0].x1+65; P.y=H+300; P.vy=0;
+    stepPhysics(1/120); ST("pit -> fail", Game.state==="fail"&&Game.failReason==="pit");
+    // revive
+    Game.egg="M"; revive(); ST("revive -> escape", Game.state==="escape");
+    ST("revive cools heat", Game.heat<EGGS.M.heat0);
+    // heat math: S beatable, G needs vents
+    ST("S heat beatable (15s)", EGGS.S.heat0+EGGS.S.heatRate*15<100);
+    ST("G heat needs vents", EGGS.G.heat0+EGGS.G.heatRate*15>100);
+    // win flow
+    Game.egg="L"; Game.coins=10; Game.escapeT=20;
+    winHeist();
+    ST("win -> results", Game.state==="results");
+    ST("breakdown total>0", Game.breakdown.total>0);
+    ST("hatched in L pool", EGGS.L.rarity.indexOf(Game.hatched.rarity)>=0);
+    ST("fmt", fmt(2500)==="2.5k"&&fmt(900)==="900");
+    ST("store prefix", (function(){ Store.set("x",1); for(var k in localStorage){} return true; })());
+  }catch(err){ SelfTest.fails++; SelfTest.firstFail="EX: "+(err&&err.message); }
+  SelfTest.done=true;
+  try{ document.title="SELFTEST "+SelfTest.pass+"/"+SelfTest.total+(SelfTest.fails?" FAIL":" PASS"); }catch(e){}
+}
+
+/* ---------------- QA hooks ---------------- */
+var EH = window.EH = {
+  Game:Game, Store:Store, Sfx:Sfx, STR:STR, EGGS:EGGS, MASCOTS:MASCOTS, THEMES:THEMES,
+  SelfTest:SelfTest, runSelfTest:runSelfTest,
+  genGauntlet:genGauntlet, genEscape:genEscape, hatchEgg:hatchEgg,
+  startHeist:startHeist, grabEgg:grabEgg, fail:fail, revive:revive, winHeist:winHeist,
+  jump:jump, stepPhysics:stepPhysics, renderShareCard:renderShareCard,
+  qa:{
+    state:function(){ return Game.state; },
+    tap:function(x,y){ onTap(x,y); },
+    btn:function(a){ doBtn(a); },
+    debugVault:function(){ Game.heist=1; Game.theme=0; LVL=genGauntlet(0,1,4242); resetPlayer(LVL.vaultX-60); Game.state="run"; Game.camX=P.x-200; },
+    debugEscape:function(id){ Game.egg=id||"M"; LVL=genEscape(0,1,7777,Game.egg); resetPlayer(400); Game.state="escape"; Game.heat=EGGS[Game.egg].heat0; Game.camX=P.x-200; },
+    debugPit:function(){ startHeist(1); var g0=LVL.grounds[0]; P.x=g0.x1-80; Game.camX=P.x-200; },
+    showGolden:function(){ Game.goldenSpawned=true; Game._goldRevealed=true; },
+    setHeat:function(v){ Game.heat=v; },
+    god:function(){ P.inv=99999; },
+    gapAhead:function(){
+      if(!LVL) return -1;
+      for(var i=0;i<LVL.grounds.length;i++){ var g=LVL.grounds[i];
+        if(P.x>=g.x0 && P.x<=g.x1) return Math.round(g.x1-P.x); }
+      return -1;
+    },
+    giveRadar:function(){ Game.radar=true; Game.goldenSpawned=true; Game._goldRevealed=true; },
+    forceVaultUI:function(){ Game.vaultEggs=["S","M","L","XL"]; Game.goldenSpawned=true; Game.state="vault"; Game._goldRevealed=true; },
+    failNow:function(r){ fail(r||"trap"); },
+    winNow:function(){ if(!Game.egg) Game.egg="M"; Game.coins=12; Game.escapeT=18; winHeist(); },
+    setLang:function(l){ Game.lang=l; },
+    player:function(){ return {x:Math.round(P.x),y:Math.round(P.y),onGround:P.onGround}; }
+  }
+};
+
+/* ---------------- boot ---------------- */
+(function boot(){
+  try{
+    if(FORCE_EN) Game.lang="en";
+    else { var nv=(navigator.language||"en").slice(0,2); if(nv==="es") Game.lang="es"; }
+  }catch(e){}
+  Game.best=Store.get("best",0);
+  if(window.Portal && Portal.boot){ try{ Portal.boot(); }catch(e){} }
+  if(window.Portal && Portal.loadingStart){ try{ Portal.loadingStart(); }catch(e){} }
+  var isTest=/[?&]test=1/.test(location.search||"");
+  requestAnimationFrame(frame);
+  if(isTest){
+    setTimeout(function(){ runSelfTest();
+      if(window.Portal && Portal.loadingStop){ try{ Portal.loadingStop(); }catch(e){} }
+    }, 400);
+  } else {
+    setTimeout(function(){ if(window.Portal && Portal.loadingStop){ try{ Portal.loadingStop(); }catch(e){} } }, 1200);
+  }
+})();
+</script>
+</body>
+</html>
